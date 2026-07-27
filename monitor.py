@@ -1,34 +1,20 @@
 import requests
 import os
+import json
 from datetime import datetime, timezone, timedelta
 
-UNIVERSE_ID = os.environ["ROBLOX_UNIVERSE_ID"].strip()
+PLACE_ID = "104113832581752"
 API_KEY = os.environ["ROBLOX_API_KEY"].strip()
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK"]
-DEV_USER_IDS = {"2861521893", "940951115", "744477563"}
-AUDIT_URL = f"https://apis.roblox.com/cloud/v2/universes/{UNIVERSE_ID}/audit-log-entries"
-ACTION_LABELS = {
-    "SavePlace": "saved a place",
-    "PublishPlace": "published a place",
-    "CreatePlace": "created a new place",
-    "DeletePlace": "deleted a place",
-    "ConfigureGame": "changed game settings",
-    "CreateAsset": "uploaded an asset",
-    "CreateItems": "created items",
-}
+STATE_FILE = "state.json"
 
-username_cache = {}
-cutoff = datetime.now(timezone.utc) - timedelta(minutes=6)
+headers = {"x-api-key": API_KEY}
 
 def get_username(user_id):
-    if user_id in username_cache:
-        return username_cache[user_id]
     try:
         r = requests.get(f"https://users.roblox.com/v1/users/{user_id}", timeout=10)
         if r.status_code == 200:
-            name = r.json().get("name", user_id)
-            username_cache[user_id] = name
-            return name
+            return r.json().get("name", str(user_id))
     except Exception:
         pass
     return str(user_id)
@@ -39,43 +25,66 @@ def send_webhook(message):
     except Exception:
         pass
 
-def extract_user_id(actor):
-    user = actor.get("user", {})
-    raw = user.get("id", "") or user.get("userId", "")
-    return str(raw).replace("users/", "")
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    return {"tc_members": []}
 
-headers = {"x-api-key": API_KEY}
-params = {"maxPageSize": 50}
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
 
+state = load_state()
+
+# Team Create session members
 try:
-    r = requests.get(AUDIT_URL, headers=headers, params=params, timeout=15)
-    print(f"[DEBUG] HTTP status: {r.status_code}")
+    r = requests.get(
+        f"https://apis.roblox.com/legacy-develop/v1/places/{PLACE_ID}/teamcreate/active_session/members",
+        headers=headers,
+        timeout=15
+    )
+    print(f"[TC] {r.status_code} {r.text[:300]}")
     if r.status_code == 200:
-        entries = r.json().get("auditLogEntries", [])
-        print(f"[DEBUG] Entry count: {len(entries)}")
-        for entry in entries:
-            print(f"[DEBUG] action={entry.get('action')} time={entry.get('createTime')} actor={entry.get('actor')}")
-            create_time = entry.get("createTime", "")
+        data = r.json()
+        members = data.get("data", []) if isinstance(data, dict) else data
+        current_ids = set(str(m.get("userId") or m.get("id", "")) for m in members)
+        previous_ids = set(state.get("tc_members", []))
+
+        for uid in current_ids - previous_ids:
+            send_webhook(f"**{get_username(uid)}** joined Studio")
+        for uid in previous_ids - current_ids:
+            send_webhook(f"**{get_username(uid)}** left Studio")
+
+        state["tc_members"] = list(current_ids)
+except Exception as e:
+    print(f"[TC ERROR] {e}")
+
+# Place version history
+cutoff = datetime.now(timezone.utc) - timedelta(minutes=6)
+try:
+    r = requests.get(
+        f"https://apis.roblox.com/place-version-history-api/v1/{PLACE_ID}/history",
+        headers=headers,
+        params={"limit": 10},
+        timeout=15
+    )
+    print(f"[VH] {r.status_code} {r.text[:500]}")
+    if r.status_code == 200:
+        data = r.json()
+        versions = data.get("versions") or data.get("data") or []
+        for v in versions:
+            created = v.get("createdAt") or v.get("createTime") or v.get("Created", "")
             try:
-                entry_time = datetime.fromisoformat(create_time.replace("Z", "+00:00"))
+                vtime = datetime.fromisoformat(created.replace("Z", "+00:00"))
             except Exception:
                 continue
-            if entry_time < cutoff:
+            if vtime < cutoff:
                 continue
-            user_id = extract_user_id(entry.get("actor", {}))
-            if user_id not in DEV_USER_IDS:
-                continue
-            action = entry.get("action", "")
-            label = ACTION_LABELS.get(action)
-            if not label:
-                continue
-            username = get_username(user_id)
-            details = entry.get("details", {})
-            place_name = details.get("placeName") or details.get("targetName") or ""
-            place_part = f" — **{place_name}**" if place_name else ""
-            send_webhook(f"**{username}** {label}{place_part}")
-    else:
-        print(f"[ERROR] Response body: {r.text}")
+            version_num = v.get("versionNumber") or v.get("version") or "?"
+            creator = v.get("creatorName") or v.get("creator", {}).get("name") or "Unknown"
+            send_webhook(f"**{creator}** saved place — version **{version_num}**")
 except Exception as e:
-    print(f"[ERROR] {e}")
-    raise
+    print(f"[VH ERROR] {e}")
+
+save_state(state)
