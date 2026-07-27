@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timezone, timedelta
 
 GROUP_ID = "289573924"
-API_KEY = os.environ["ROBLOX_API_KEY"]
+API_KEY = os.environ["ROBLOX_API_KEY"].strip()
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK"]
 DEV_USER_IDS = {"2861521893", "940951115", "744477563"}
 AUDIT_URL = f"https://apis.roblox.com/cloud/v2/groups/{GROUP_ID}/audit-log-entries"
