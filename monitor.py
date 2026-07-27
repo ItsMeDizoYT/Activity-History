@@ -29,6 +29,11 @@ def get_username(user_id):
     try:
         r = requests.get(f"https://users.roblox.com/v1/users/{user_id}", timeout=10)
         if r.status_code == 200:
+        print(f"[DEBUG] Status: {r.status_code}")
+        entries = r.json().get("auditLogEntries", [])
+        print(f"[DEBUG] Entry count: {len(entries)}")
+        for entry in entries:
+            print(f"[DEBUG] action={entry.get('action')} time={entry.get('createTime')} actor={entry.get('actor')}")
             name = r.json().get("name", user_id)
             username_cache[user_id] = name
             return name
@@ -81,5 +86,6 @@ try:
             place_part = f" — **{place_name}**" if place_name else ""
 
             send_webhook(f"**{username}** {label}{place_part}")
-except Exception:
-    pass
+except Exception as e:
+    print(f"[ERROR] {e}")
+    raise
